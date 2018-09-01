@@ -48,6 +48,7 @@
 #include "request.h"
 #include "user.h"
 #include "security.h"
+#include "fsync.h"
 
 /* process structure */
 
@@ -64,6 +65,7 @@ static int process_signaled( struct object *obj, struct wait_queue_entry *entry 
 static unsigned int process_map_access( struct object *obj, unsigned int access );
 static void process_poll_event( struct fd *fd, int event );
 static void process_destroy( struct object *obj );
+static unsigned int process_get_fsync_idx( struct object *obj, enum fsync_type *type );
 static void terminate_process( struct process *process, struct thread *skip, int exit_code );
 
 static const struct object_ops process_ops =
@@ -74,7 +76,7 @@ static const struct object_ops process_ops =
     add_queue,                   /* add_queue */
     remove_queue,                /* remove_queue */
     process_signaled,            /* signaled */
-    NULL,                        /* get_fsync_idx */
+    process_get_fsync_idx,       /* get_fsync_idx */
     no_satisfied,                /* satisfied */
     no_signal,                   /* signal */
     no_get_fd,                   /* get_fd */
@@ -536,6 +538,7 @@ struct thread *create_process( int fd, struct thread *parent_thread, int inherit
     process->trace_data      = 0;
     process->rawinput_mouse  = NULL;
     process->rawinput_kbd    = NULL;
+    process->fsync_idx       = 0;
     list_init( &process->thread_list );
     list_init( &process->locks );
     list_init( &process->asyncs );
@@ -579,6 +582,9 @@ struct thread *create_process( int fd, struct thread *parent_thread, int inherit
      * makes more sense for the time being. */
     if (!token_assign_label( process->token, security_high_label_sid ))
         goto error;
+
+    if (do_fsync())
+        process->fsync_idx = fsync_alloc_shm( 0, 0 );
 
     /* create the main thread */
     if (pipe( request_pipe ) == -1)
@@ -659,6 +665,13 @@ static int process_signaled( struct object *obj, struct wait_queue_entry *entry 
 {
     struct process *process = (struct process *)obj;
     return !process->running_threads;
+}
+
+static unsigned int process_get_fsync_idx( struct object *obj, enum fsync_type *type )
+{
+    struct process *process = (struct process *)obj;
+    *type = FSYNC_MANUAL_SERVER;
+    return process->fsync_idx;
 }
 
 static unsigned int process_map_access( struct object *obj, unsigned int access )
